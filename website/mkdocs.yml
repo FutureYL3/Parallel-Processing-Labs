@@ -1,0 +1,113 @@
+site_name: 并行处理课程实验
+site_description: 中国科学院大学《并行处理》研究生课程实验文档
+site_url: https://madrid1011.github.io/parallel-computing-labs/
+repo_url: https://github.com/MAdrid1011/parallel-computing-labs
+repo_name: 实验源码
+docs_dir: docs
+site_dir: site
+use_directory_urls: true
+watch:
+  - hooks.py
+  - overrides
+  - search_dictionary.txt
+  - ../Lab1/README.md
+  - ../Lab2/README.md
+  - ../Lab3/README.md
+  - ../Lab4/README.md
+  - ../Lab5/README.md
+
+theme:
+  name: material
+  custom_dir: overrides
+  language: zh
+  font: false
+  icon:
+    logo: material/chip
+    repo: fontawesome/brands/github
+  palette:
+    - scheme: default
+      primary: custom
+      accent: light blue
+      toggle:
+        icon: material/weather-sunny
+        name: 切换到夜晚模式
+    - scheme: slate
+      primary: custom
+      accent: light blue
+      toggle:
+        icon: material/weather-night
+        name: 切换到白天模式
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.footer
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+
+nav:
+  - 首页: index.md
+  - 实验准备:
+    - 开始之前: preparation/index.md
+    - 配置开发环境: preparation/environment.md
+    - 终端与项目目录: preparation/terminal.md
+    - 怎样测量程序: preparation/measurement.md
+  - Lab1:
+    - 实验介绍: lab1/index.md
+    - 实验教程:
+      - 稀疏矩阵与 CSR: lab1/csr.md
+      - 任务划分与分块计算: lab1/parallel.md
+    - 操作步骤: lab1/run.md
+  - Lab2:
+    - 实验介绍: lab2/index.md
+    - 实验教程:
+      - 矩阵转置与局部性: lab2/locality.md
+    - 操作步骤: lab2/run.md
+  - Lab3:
+    - 实验介绍: lab3/index.md
+    - 实验教程:
+      - 共享计数与同步: lab3/synchronization.md
+    - 操作步骤: lab3/run.md
+  - Lab4:
+    - 实验介绍: lab4/index.md
+    - 实验教程:
+      - 从线程到进程: lab4/mpi.md
+      - 按需通信与计算重叠: lab4/communication.md
+    - 操作步骤: lab4/run.md
+  - Lab5:
+    - 实验介绍: lab5/index.md
+    - 实验教程:
+      - SPM 与脉动阵列: lab5/architecture.md
+      - 分块、双缓冲与周期: lab5/tiling.md
+    - 操作步骤: lab5/run.md
+  - FAQ:
+    - 常见问题: faq.md
+    - 术语速查: glossary.md
+
+plugins:
+  - search:
+      lang: [zh, en]
+      jieba_dict_user: search_dictionary.txt
+
+hooks:
+  - hooks.py
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_css:
+  - stylesheets/extra.css

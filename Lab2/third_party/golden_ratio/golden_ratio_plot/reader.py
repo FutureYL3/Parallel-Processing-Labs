@@ -1,0 +1,520 @@
+from __future__ import annotations
+
+import csv
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+
+@dataclass
+class AblationData:
+    """Structured data for an ablation-mode bar chart.
+
+    Attributes
+    ----------
+    groups      : ordered list of group names (x-axis positions)
+    labels      : ordered list of unique variant labels (legend entries)
+    data        : dict mapping (group, label) → value
+    value_label : the CSV column header for the numeric column — used
+                  directly as the y-axis label (e.g. ``"Accuracy (%)"``).
+    """
+    groups: List[str] = field(default_factory=list)
+    labels: List[str] = field(default_factory=list)
+    data: Dict[Tuple[str, str], float] = field(default_factory=dict)
+    value_label: str = "value"
+    caption: str = ""
+    legend_note: str = ""
+    major_group: Dict[str, str] = field(default_factory=dict)
+    minor_group: Dict[str, str] = field(default_factory=dict)
+
+    @property
+    def n_groups(self) -> int:
+        return len(self.groups)
+
+    @property
+    def n_labels(self) -> int:
+        return len(self.labels)
+
+    def get(self, group: str, label: str) -> float:
+        """Return value for (group, label); raises KeyError if missing."""
+        return self.data[(group, label)]
+
+    def all_values(self) -> List[float]:
+        return list(self.data.values())
+
+
+def read_csv(path: str | Path) -> AblationData:
+    """Read a CSV file into :class:`AblationData`.
+
+    Required columns: ``group``, ``label``, and **exactly one other column**
+    whose header becomes the y-axis label.  The header can include a unit,
+    e.g. ``Accuracy (%)`` or ``Speedup (×)``.
+
+    Raises
+    ------
+    ValueError
+        If required columns are missing, more than one value column is found,
+        or a cell cannot be parsed as float.
+    FileNotFoundError
+        If the path does not exist.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Input CSV not found: {path}")
+
+    groups_seen: list[str] = []
+    labels_seen: list[str] = []
+    data: Dict[Tuple[str, str], float] = {}
+
+    with path.open(newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        _validate_fieldnames(reader.fieldnames)
+        value_col = _detect_value_column(reader.fieldnames)
+        fieldnames = reader.fieldnames or []
+        has_major = "major_group" in fieldnames
+        has_minor = "minor_group" in fieldnames
+
+        caption = ""
+        legend_note = ""
+        major_group: Dict[str, str] = {}
+        minor_group: Dict[str, str] = {}
+        for i, row in enumerate(reader, start=2):
+            group = row["group"].strip()
+            label = row["label"].strip()
+            raw_value = row[value_col].strip()
+
+            # Metadata rows: group starts with "__" (e.g. "__caption__")
+            if group.startswith("__"):
+                if group == "__caption__":
+                    caption = raw_value
+                elif group == "__legend__":
+                    legend_note = label or raw_value
+                continue
+
+            if not group or not label:
+                raise ValueError(f"Row {i}: 'group' and 'label' must not be empty.")
+            try:
+                value = float(raw_value)
+            except ValueError:
+                raise ValueError(
+                    f"Row {i}: value column '{value_col}' must be a number, "
+                    f"got {raw_value!r}."
+                )
+
+            if group not in groups_seen:
+                groups_seen.append(group)
+            if label not in labels_seen:
+                labels_seen.append(label)
+            if has_major:
+                major_group[group] = row.get("major_group", "").strip() or group
+            if has_minor:
+                minor_group[group] = row.get("minor_group", "").strip() or group
+
+            key = (group, label)
+            if key in data:
+                raise ValueError(
+                    f"Row {i}: duplicate (group, label) pair: {key}."
+                )
+            data[key] = value
+
+    return AblationData(
+        groups=groups_seen,
+        labels=labels_seen,
+        data=data,
+        value_label=value_col,
+        caption=caption,
+        legend_note=legend_note,
+        major_group=major_group,
+        minor_group=minor_group,
+    )
+
+
+# ── Sensitivity study data model and reader ───────────────────────────────────
+
+@dataclass
+class SensitivityData:
+    """Data for one sensitivity-study subplot (dual-axis line chart).
+
+    Attributes
+    ----------
+    groups      : ordered unique group/method names; ``[""]`` = single unnamed group.
+    x_values    : ordered x-axis category labels (strings, shown on x-axis ticks).
+    left_label  : left y-axis label — taken from the CSV column header.
+    right_label : right y-axis label — taken from the CSV column header.
+    x_label     : optional x-axis quantity name from ``__xlabel__`` metadata.
+    left_data   : group → list of left-y values, aligned with ``x_values``.
+    right_data  : group → list of right-y values, aligned with ``x_values``.
+    caption     : subfigure label, e.g. ``"(a) Effect of K"``.
+    """
+
+    groups: List[str] = field(default_factory=list)
+    x_values: List[str] = field(default_factory=list)
+    left_label: str = "Left"
+    right_label: str = "Right"
+    left_data: Dict[str, List[float]] = field(default_factory=dict)
+    right_data: Dict[str, List[float]] = field(default_factory=dict)
+    right_series_labels: List[str] = field(default_factory=list)
+    right_series_data: Dict[str, Dict[str, List[float]]] = field(default_factory=dict)
+    x_label: str = ""
+    caption: str = ""
+    left_mode: str = "variation"   # "variation" | "stable"
+    right_mode: str = "variation"  # "variation" | "stable"
+    interp_pts: int = 0            # extra points between each pair (0 = off)
+    left_plot: str = "line"        # "line" | "bar_first" | "bar_grouped"
+    right_plot: str = "all"        # "all" | "first"
+
+    @property
+    def n_groups(self) -> int:
+        return len(self.groups)
+
+    @property
+    def all_left_values(self) -> List[float]:
+        return [v for vs in self.left_data.values() for v in vs]
+
+    @property
+    def all_right_values(self) -> List[float]:
+        if self.right_series_data:
+            return [
+                v
+                for series in self.right_series_data.values()
+                for vs in series.values()
+                for v in vs
+            ]
+        return [v for vs in self.right_data.values() for v in vs]
+
+
+def read_sensitivity_csv(path: str | Path) -> SensitivityData:
+    """Read a sensitivity-study CSV into :class:`SensitivityData`.
+
+    CSV format — four columns in order:
+
+    .. code-block:: text
+
+        group, x, <Left Axis Label>, <Right Axis Label>
+
+    - ``group`` : method / series name.  Leave blank for a single unnamed group.
+    - ``x``     : x-axis parameter value, treated as a category label.
+    - Two value columns whose **headers** become the left and right y-axis labels.
+    - A row with ``group = __caption__`` stores the subfigure caption text in
+      the first value column (the right value column is ignored for that row).
+
+    Single-group example::
+
+        group,x,Accuracy (%),FPS
+        __caption__,,(a) Effect of K,
+        ,1,82.3,24.5
+        ,2,85.1,23.2
+        ,4,87.0,22.0
+
+    Multi-group example::
+
+        group,x,Accuracy (%),FPS
+        __caption__,,(a) Effect of K,
+        Method A,1,82.3,24.5
+        Method A,2,85.1,23.2
+        Method B,1,78.0,26.0
+        Method B,2,80.5,24.8
+
+    Raises
+    ------
+    FileNotFoundError
+        If the CSV path does not exist.
+    ValueError
+        If required columns are missing, value columns ≠ 2, or non-numeric data.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Input CSV not found: {path}")
+
+    with path.open(newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        fieldnames: List[str] = list(reader.fieldnames or [])
+
+        # Validate required columns
+        lower = [f.strip().lower() for f in fieldnames]
+        if "group" not in lower:
+            raise ValueError("Sensitivity CSV must have a 'group' column.")
+        if "x" not in lower:
+            raise ValueError("Sensitivity CSV must have an 'x' column.")
+        reserved = {"group", "x"}
+        value_cols = [f for f in fieldnames if f.strip().lower() not in reserved]
+        if len(value_cols) < 2:
+            raise ValueError(
+                f"Sensitivity CSV must have at least 2 value columns (left and right); "
+                f"found {len(value_cols)}: {value_cols}."
+            )
+        left_col = value_cols[0]
+        right_cols = value_cols[1:]
+        right_col = right_cols[0]
+
+        # Collect raw rows first so we can align all groups to the same x_values
+        rows: List[Tuple[str, str, float, List[float]]] = []
+        caption = ""
+        x_label = ""
+        left_mode = "variation"
+        right_mode = "variation"
+        interp_pts = 0
+        left_plot = "line"
+        right_plot = "all"
+        right_label_override = ""
+
+        for i, row in enumerate(reader, start=2):
+            group = row["group"].strip()
+            x_raw = row["x"].strip()
+            left_raw = (row[left_col] or "").strip()
+            right_raw = (row[right_col] or "").strip()
+            extra_right_raw = [
+                (row[col] or "").strip()
+                for col in right_cols[1:]
+            ]
+
+            if group.startswith("__"):
+                if group == "__caption__":
+                    caption = left_raw or right_raw
+                elif group == "__xlabel__":
+                    x_label = x_raw or left_raw or right_raw
+                elif group == "__ymode__":
+                    if left_raw:
+                        left_mode = left_raw.lower()
+                    if right_raw:
+                        right_mode = right_raw.lower()
+                elif group == "__interp__":
+                    try:
+                        interp_pts = int(left_raw or right_raw)
+                    except ValueError:
+                        pass
+                elif group == "__leftplot__":
+                    left_plot = (left_raw or right_raw or "line").lower()
+                elif group == "__rightplot__":
+                    right_plot = (left_raw or right_raw or "all").lower()
+                elif group == "__rightlabel__":
+                    right_label_override = left_raw or right_raw or next(
+                        (v for v in extra_right_raw if v), ""
+                    )
+                continue
+
+            try:
+                lv = float(left_raw)
+            except ValueError:
+                raise ValueError(
+                    f"Row {i}: left value '{left_raw}' in column '{left_col}' is not a number."
+                )
+            right_values: List[float] = []
+            for col in right_cols:
+                raw = (row[col] or "").strip()
+                try:
+                    right_values.append(float(raw))
+                except ValueError:
+                    raise ValueError(
+                        f"Row {i}: right value '{raw}' in column '{col}' is not a number."
+                    )
+
+            rows.append((group, x_raw, lv, right_values))
+
+    if not rows:
+        raise ValueError(f"Sensitivity CSV has no data rows: {path}")
+
+    # Build ordered groups and x_values (preserve first-seen order)
+    groups_seen: List[str] = list(dict.fromkeys(g for g, _, _, _ in rows))
+    x_seen: List[str] = list(dict.fromkeys(x for _, x, _, _ in rows))
+
+    # Index data by (group, x) for alignment
+    data_map: Dict[Tuple[str, str], Tuple[float, List[float]]] = {}
+    for group, x_raw, lv, rvs in rows:
+        key = (group, x_raw)
+        if key in data_map:
+            raise ValueError(
+                f"Duplicate (group='{group}', x='{x_raw}') in sensitivity CSV."
+            )
+        data_map[key] = (lv, rvs)
+
+    left_data: Dict[str, List[float]] = {}
+    right_data: Dict[str, List[float]] = {}
+    right_series_data: Dict[str, Dict[str, List[float]]] = {
+        label: {} for label in right_cols
+    }
+    for g in groups_seen:
+        left_data[g] = []
+        right_data[g] = []
+        for label in right_cols:
+            right_series_data[label][g] = []
+        for x in x_seen:
+            if (g, x) not in data_map:
+                raise ValueError(
+                    f"Group '{g}' has no value for x='{x}'."
+                )
+            lv, rvs = data_map[(g, x)]
+            left_data[g].append(lv)
+            right_data[g].append(rvs[0])
+            for label, rv in zip(right_cols, rvs):
+                right_series_data[label][g].append(rv)
+
+    return SensitivityData(
+        groups=groups_seen,
+        x_values=x_seen,
+        left_label=left_col,
+        right_label=right_label_override or right_col,
+        left_data=left_data,
+        right_data=right_data,
+        right_series_labels=right_cols,
+        right_series_data=right_series_data,
+        x_label=x_label,
+        caption=caption,
+        left_mode=left_mode,
+        right_mode=right_mode,
+        interp_pts=interp_pts,
+        left_plot=left_plot,
+        right_plot=right_plot,
+    )
+
+
+# ── Decomposition chart data model ────────────────────────────────────────────
+
+@dataclass
+class DecompData:
+    """Structured data for a comparison + decomposition bar chart.
+
+    Attributes
+    ----------
+    groups   : ordered x-axis group labels.
+    bars     : ordered bar names within each group (the comparison axis).
+    segments : bar_name → ordered list of stack-segment names.
+               A single entry of ``""`` means the bar is unsegmented (solid).
+    values   : (group, bar, segment) → numeric value.
+    y_label  : y-axis label taken from the CSV metric column header.
+    caption  : optional panel subtitle (from ``__caption__`` metadata row).
+    """
+    groups: List[str] = field(default_factory=list)
+    bars: List[str] = field(default_factory=list)
+    segments: Dict[str, List[str]] = field(default_factory=dict)
+    values: Dict[Tuple[str, str, str], float] = field(default_factory=dict)
+    y_label: str = "value"
+    caption: str = ""
+    legend_note: str = ""
+    major_group: Dict[str, str] = field(default_factory=dict)
+    minor_group: Dict[str, str] = field(default_factory=dict)
+
+
+def read_decomp_csv(path: "str | Path") -> DecompData:
+    """Read a CSV into :class:`DecompData`.
+
+    Required column order: ``group``, ``bar``, ``segment``, ``<metric>``.
+    The ``segment`` column may be empty for an unsegmented (solid) bar.
+
+    Metadata rows
+    -------------
+    ``__caption__`` : caption text in any non-group column.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Input CSV not found: {path}")
+
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fields = reader.fieldnames or []
+        lower_to_name = {f.strip().lower(): f for f in fields}
+        if "group" not in lower_to_name or "bar" not in lower_to_name:
+            raise ValueError(f"decomp CSV needs at least 'group' and 'bar': {path}")
+
+        group_col = lower_to_name["group"]
+        bar_col   = lower_to_name["bar"]
+        seg_col   = lower_to_name.get("segment", "")
+        major_col = lower_to_name.get("major_group", "")
+        minor_col = lower_to_name.get("minor_group", "")
+        reserved = {"group", "major_group", "minor_group", "bar", "bar_group", "segment"}
+        value_cols = [f for f in fields if f.strip().lower() not in reserved]
+        if not value_cols:
+            raise ValueError(f"decomp CSV needs one metric column: {path}")
+        y_col = value_cols[0]
+
+        groups_seen: List[str] = []
+        bars_seen:   List[str] = []
+        segs: Dict[str, List[str]] = {}
+        values: Dict[Tuple[str, str, str], float] = {}
+        caption = ""
+        legend_note = ""
+        major_group: Dict[str, str] = {}
+        minor_group: Dict[str, str] = {}
+
+        for row in reader:
+            grp     = (row.get(group_col) or "").strip()
+            bar     = (row.get(bar_col)   or "").strip()
+            seg     = (row.get(seg_col)   or "").strip() if seg_col else ""
+            val_raw = (row.get(y_col)     or "").strip()
+
+            if grp == "__caption__":
+                caption = next((v for v in [bar, seg, val_raw] if v), "")
+                continue
+            if grp == "__legend__":
+                legend_note = next((v for v in [bar, seg, val_raw] if v), "")
+                continue
+
+            if not grp or not bar:
+                continue
+
+            try:
+                val = float(val_raw)
+            except ValueError:
+                continue
+
+            if grp not in groups_seen:
+                groups_seen.append(grp)
+            if bar not in bars_seen:
+                bars_seen.append(bar)
+            if bar not in segs:
+                segs[bar] = []
+            if seg not in segs[bar]:
+                segs[bar].append(seg)
+            if major_col:
+                major_group[grp] = (row.get(major_col) or "").strip() or grp
+            if minor_col:
+                minor_group[grp] = (row.get(minor_col) or "").strip() or grp
+
+            values[(grp, bar, seg)] = val
+
+    return DecompData(
+        groups=groups_seen,
+        bars=bars_seen,
+        segments=segs,
+        values=values,
+        y_label=y_col,
+        caption=caption,
+        legend_note=legend_note,
+        major_group=major_group,
+        minor_group=minor_group,
+    )
+
+
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _validate_fieldnames(fieldnames: list[str] | None) -> None:
+    if fieldnames is None:
+        raise ValueError("CSV file appears to be empty.")
+    lower = {f.strip().lower() for f in fieldnames}
+    for required in ("group", "label"):
+        if required not in lower:
+            raise ValueError(
+                f"CSV is missing required column '{required}'. "
+                f"Found: {', '.join(fieldnames)}."
+            )
+
+
+def _detect_value_column(fieldnames: list[str]) -> str:
+    """Return the one column that is neither 'group' nor 'label'.
+
+    The column name is used verbatim as the y-axis label, so you can write
+    the unit directly in the header, e.g. ``Accuracy (%)`` or ``Speedup (×)``.
+    """
+    reserved = {"group", "major_group", "minor_group", "label"}
+    value_cols = [f for f in fieldnames if f.strip().lower() not in reserved]
+    if not value_cols:
+        raise ValueError(
+            "CSV must contain a value column (any column other than "
+            "'group' and 'label')."
+        )
+    if len(value_cols) > 1:
+        raise ValueError(
+            f"CSV has multiple value columns: {value_cols}. "
+            "Only one value column is supported per chart."
+        )
+    return value_cols[0]

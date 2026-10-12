@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/MAdrid1011/ZirconSim",
+  "commit": "cffdad81b3cab641cd5f59bee201cbd1667070d4",
+  "reference_files": ["include/AXIMemory.h", "src/AXIMemory.cc"],
+  "method": "C++ byte-addressed storage, burst transactions, pre-edge drive and handshake sampling, post-edge update, held responses and deterministic ready/valid stalls",
+  "implementation": "Independent implementation for this accelerator; adds fixed response latency and beat spacing. No ZirconSim source is copied."
+}
