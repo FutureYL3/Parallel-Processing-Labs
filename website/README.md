@@ -65,6 +65,21 @@ https://madrid1011.github.io/parallel-computing-labs/
 
 ### 2. 发布静态页面分支
 
+第一次从新克隆的副本发布时，先检查本地是否已有发布分支：
+
+```bash
+git branch --list gh-pages
+```
+
+如果没有输出，而远程仓库已经有 `gh-pages`，在当前仓库中执行：
+
+```bash
+git fetch origin gh-pages:refs/remotes/origin/gh-pages
+git branch --track gh-pages origin/gh-pages
+```
+
+这样新页面提交会沿用现有发布历史。已有本地 `gh-pages` 时不用重复创建分支。
+
 在 `website/` 中，激活环境后执行：
 
 ```bash
